@@ -1,4 +1,6 @@
 
+using population.Headless.Startup;
+
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.CreateUmbracoBuilder()
@@ -6,6 +8,7 @@ builder.CreateUmbracoBuilder()
     .AddWebsite()
     .AddDeliveryApi()
     .AddComposers()
+    .ConfigureProductionSwaggerRoute()
     .Build();
 
 WebApplication app = builder.Build();
