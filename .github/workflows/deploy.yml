@@ -1,0 +1,62 @@
+name: Deploy to Hosting
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish
+        run: >
+          dotnet publish population.Web/population.Web.csproj
+          --configuration Release
+          --runtime win-x86
+          --self-contained true
+          --output ./publish
+
+      - name: Write appsettings.json
+        run: Set-Content -Path ./publish/appsettings.json -Value '${{ secrets.APPSETTINGS_JSON }}' -Encoding utf8
+        shell: powershell
+
+      - name: Put site offline
+        run: |
+          Set-Content -Path app_offline.htm -Value @'
+          <html><body><h1><blink>Back shortly</blink></h1></body></html>
+          '@
+          curl --silent --show-error --ftp-create-dirs `
+            -T "app_offline.htm" `
+            --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" `
+            "ftp://${{ secrets.FTP_SERVER }}/world-population.suedeapple.co.uk/public_html/app_offline.htm"
+        shell: powershell
+
+      - name: Deploy via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./publish/
+          server-dir: /world-population.suedeapple.co.uk/public_html/
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/app_offline.htm
+
+      - name: Bring site back online
+        if: always()
+        run: |
+          curl --silent --show-error `
+            -Q "DELE /world-population.suedeapple.co.uk/public_html/app_offline.htm" `
+            --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" `
+            "ftp://${{ secrets.FTP_SERVER }}/"
+        shell: powershell
