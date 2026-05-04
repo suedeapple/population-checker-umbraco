@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="population.Headless/population.Headless.csproj" />
+  <Project Path="population.Web/population.Web.csproj" />
+</Solution>
