@@ -33,7 +33,7 @@ jobs:
           Set-Content -Path app_offline.htm -Value @'
           <html><body><h1><blink>Back shortly</blink></h1></body></html>
           '@
-          curl --silent --show-error --ftp-create-dirs `
+          curl.exe --silent --show-error --ftp-create-dirs `
             -T "app_offline.htm" `
             --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" `
             "ftp://${{ secrets.FTP_SERVER }}/world-population.suedeapple.co.uk/public_html/app_offline.htm"
@@ -55,7 +55,7 @@ jobs:
       - name: Bring site back online
         if: always()
         run: |
-          curl --silent --show-error `
+          curl.exe --silent --show-error `
             -Q "DELE /world-population.suedeapple.co.uk/public_html/app_offline.htm" `
             --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" `
             "ftp://${{ secrets.FTP_SERVER }}/"
