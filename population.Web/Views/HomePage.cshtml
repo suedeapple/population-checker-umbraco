@@ -1,0 +1,149 @@
+@inherits Umbraco.Cms.Web.Common.Views.UmbracoViewPage<Umbraco.Cms.Web.Common.PublishedModels.HomePage>
+@inject Umbraco.Cms.Core.Services.Navigation.IDocumentNavigationQueryService DocumentNavigationQueryService
+@inject Umbraco.Cms.Core.Services.IContentService ContentService
+@inject System.Net.Http.IHttpClientFactory HttpClientFactory
+@using System.Text.Json
+@{
+    Layout = null;
+
+    IEnumerable<IPublishedContent> GetChildren(Guid key)
+    {
+        if (!DocumentNavigationQueryService.TryGetChildrenKeys(key, out var keys)) return [];
+        return keys.Select(k => Umbraco.Content(k)).OfType<IPublishedContent>();
+    }
+
+    var continents = GetChildren(Model.Key).Where(c => c.ContentType.Alias == "continent");
+
+    string? statusMsg = null;
+    var statusErr = false;
+
+    if (Context.Request.Method == "POST")
+    {
+        var iso3Code = Context.Request.Form["iso3Code"].FirstOrDefault() ?? "";
+        var range    = Context.Request.Form["range"].FirstOrDefault() ?? "1960:2024";
+
+        Console.WriteLine($"[pop] Searching for country '{iso3Code}'...");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var publishedCountry = continents
+            .SelectMany(c => GetChildren(c.Key).Where(n => n.ContentType.Alias == "country"))
+            .FirstOrDefault(n => string.Equals(n.Value<string>("iso3Code"), iso3Code, StringComparison.OrdinalIgnoreCase));
+
+        var countryNode = publishedCountry != null ? ContentService.GetById(publishedCountry.Key) : null;
+
+        sw.Stop();
+        Console.WriteLine($"[pop] Find took {sw.ElapsedMilliseconds}ms — {(countryNode != null ? $"found '{countryNode.Name}' (id {countryNode.Id})" : "NOT FOUND")}");
+
+        if (countryNode == null)
+        {
+            statusMsg = $"No country found with ISO3 code '{iso3Code}'";
+            statusErr = true;
+        }
+        else
+        {
+            try
+            {
+                var url  = $"https://api.worldbank.org/v2/country/{iso3Code}/indicator/SP.POP.TOTL?format=json&date={range}&per_page=100";
+                var json = await HttpClientFactory.CreateClient().GetStringAsync(url);
+
+                using var doc  = JsonDocument.Parse(json);
+                var rows = doc.RootElement[1];
+
+                var existing = ContentService
+                    .GetPagedChildren(countryNode.Id, 0, 2000, out _, null, null)
+                    .Where(c => c.ContentType.Alias == "year")
+                    .Select(c => c.Name)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var toSave = new List<Umbraco.Cms.Core.Models.IContent>();
+                var skipped = 0;
+
+                foreach (var row in rows.EnumerateArray().OrderBy(r => r.GetProperty("date").GetString()))
+                {
+                    if (!row.TryGetProperty("value", out var val) || val.ValueKind == JsonValueKind.Null) continue;
+                    var yearStr = row.GetProperty("date").GetString()!;
+                    if (existing.Contains(yearStr)) { skipped++; continue; }
+
+                    var node = ContentService.Create(yearStr, countryNode.Id, "year");
+                    node.SetValue("population", (int)Math.Min((long)val.GetDouble(), int.MaxValue));
+                    toSave.Add(node);
+                }
+
+                foreach (var node in toSave)
+                {
+                    ContentService.Save(node);
+                    Console.WriteLine($"  Saved: {node.Name}");
+                 //   ContentService.Publish(node, []);
+                 //   Console.WriteLine($"  Published: {node.Name}");
+                }
+
+                statusMsg = $"{countryNode.Name}: created {toSave.Count}, skipped {skipped}";
+            }
+            catch (Exception ex)
+            {
+                statusMsg = $"Error: {ex.Message}";
+                statusErr = true;
+            }
+        }
+    }
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>World Bank Population</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 700px; margin: 48px auto; padding: 0 24px; background: #f8f9fa; }
+        h1 { font-size: 1.4rem; }
+        .row { display: flex; gap: 10px; align-items: center; margin: 20px 0; flex-wrap: wrap; }
+        select { padding: 8px 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 0.95rem; background: #fff; }
+        #country { min-width: 240px; }
+        button { padding: 8px 20px; background: #1a73e8; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 0.95rem; }
+        button:hover { background: #1557b0; }
+        .msg { margin: 16px 0; font-weight: 600; color: #2a7a2a; }
+        .msg.err { color: #c00; }
+    </style>
+</head>
+<body>
+    <h1>World Bank Population Lookup</h1>
+
+    @if (statusMsg != null)
+    {
+        <p class="msg @(statusErr ? "err" : "")">@statusMsg</p>
+    }
+
+    <form method="post">
+        <div class="row">
+            <select id="country" name="iso3Code">
+                <option value="">— select a country —</option>
+                @foreach (var continent in continents)
+                {
+                    var countries = GetChildren(continent.Key)
+                        .Where(c => c.ContentType.Alias == "country")
+                        .Select(c => new { Name = c.Name, Iso3 = c.Value<string>("iso3Code") })
+                        .Where(c => !string.IsNullOrWhiteSpace(c.Iso3))
+                        .OrderBy(c => c.Name);
+
+                    if (countries.Any())
+                    {
+                        <optgroup label="@continent.Name">
+                            @foreach (var country in countries)
+                            {
+                                <option value="@country.Iso3">@country.Name (@country.Iso3)</option>
+                            }
+                        </optgroup>
+                    }
+                }
+            </select>
+
+            <select name="range">
+                <option value="1960:1999">1960 – 1999</option>
+                <option value="2000:2024">2000 – 2024</option>
+                <option value="1960:2024">1960 – 2024</option>
+            </select>
+
+            <button type="submit">Fetch &amp; Save</button>
+        </div>
+    </form>
+</body>
+</html>
