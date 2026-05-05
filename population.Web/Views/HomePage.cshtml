@@ -14,9 +14,6 @@
 
     var continents = GetChildren(Model.Key).Where(c => c.ContentType.Alias == "continent");
 
-    string? statusMsg = null;
-    var statusErr = false;
-
     if (Context.Request.Method == "POST")
     {
         var iso3Code = Context.Request.Form["iso3Code"].FirstOrDefault() ?? "";
@@ -34,10 +31,10 @@
         sw.Stop();
         Console.WriteLine($"[pop] Find took {sw.ElapsedMilliseconds}ms — {(countryNode != null ? $"found '{countryNode.Name}' (id {countryNode.Id})" : "NOT FOUND")}");
 
+        string msg;
         if (countryNode == null)
         {
-            statusMsg = $"No country found with ISO3 code '{iso3Code}'";
-            statusErr = true;
+            msg = $"No country found with ISO3 code '{iso3Code}'";
         }
         else
         {
@@ -46,7 +43,7 @@
                 var url  = $"https://api.worldbank.org/v2/country/{iso3Code}/indicator/SP.POP.TOTL?format=json&date={range}&per_page=100";
                 var json = await HttpClientFactory.CreateClient().GetStringAsync(url);
 
-                using var doc  = JsonDocument.Parse(json);
+                using var doc = JsonDocument.Parse(json);
                 var rows = doc.RootElement[1];
 
                 var existing = ContentService
@@ -73,19 +70,24 @@
                 {
                     ContentService.Save(node);
                     Console.WriteLine($"  Saved: {node.Name}");
-                 //   ContentService.Publish(node, []);
-                 //   Console.WriteLine($"  Published: {node.Name}");
+                    ContentService.Publish(node, []);
+                    Console.WriteLine($"  Published: {node.Name}");
                 }
 
-                statusMsg = $"{countryNode.Name}: created {toSave.Count}, skipped {skipped}";
+                msg = $"{countryNode.Name}: created {toSave.Count}, skipped {skipped}";
             }
             catch (Exception ex)
             {
-                statusMsg = $"Error: {ex.Message}";
-                statusErr = true;
+                msg = $"Error: {ex.Message}";
             }
         }
+
+        Context.Response.Redirect($"/?range={Uri.EscapeDataString(range)}&msg={Uri.EscapeDataString(msg)}#c-{iso3Code}");
+        return;
     }
+
+    var selectedRange = Context.Request.Query["range"].FirstOrDefault() ?? "1960:2024";
+    var statusMsg     = Context.Request.Query["msg"].FirstOrDefault();
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -93,57 +95,76 @@
     <meta charset="UTF-8" />
     <title>World Bank Population</title>
     <style>
-        body { font-family: system-ui, sans-serif; max-width: 700px; margin: 48px auto; padding: 0 24px; background: #f8f9fa; }
-        h1 { font-size: 1.4rem; }
-        .row { display: flex; gap: 10px; align-items: center; margin: 20px 0; flex-wrap: wrap; }
-        select { padding: 8px 12px; border: 1px solid #ccc; border-radius: 5px; font-size: 0.95rem; background: #fff; }
-        #country { min-width: 240px; }
-        button { padding: 8px 20px; background: #1a73e8; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 0.95rem; }
+        body { font-family: system-ui, sans-serif; max-width: 860px; margin: 48px auto; padding: 0 24px; background: #f8f9fa; }
+        h1 { font-size: 1.4rem; margin-bottom: 4px; }
+        h2 { font-size: 1rem; margin: 28px 0 6px; color: #444; border-bottom: 1px solid #dde; padding-bottom: 4px; }
+        .toolbar { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
+        select { padding: 7px 11px; border: 1px solid #ccc; border-radius: 5px; font-size: 0.9rem; background: #fff; }
+        table { width: 100%; border-collapse: collapse; }
+        td { padding: 5px 10px; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+        td:first-child { width: 50%; }
+        td:nth-child(2) { color: #888; width: 80px; }
+        button { padding: 4px 14px; background: #1a73e8; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
         button:hover { background: #1557b0; }
-        .msg { margin: 16px 0; font-weight: 600; color: #2a7a2a; }
+        .msg { margin: 12px 0; font-weight: 600; color: #2a7a2a; }
         .msg.err { color: #c00; }
+        form { margin: 0; }
     </style>
 </head>
 <body>
-    <h1>World Bank Population Lookup</h1>
+    <h1>World Bank Population Import</h1>
 
-    @if (statusMsg != null)
+    <div class="toolbar">
+        <label for="rangeSelect">Range:</label>
+        <select id="rangeSelect" onchange="location.href='/?range='+this.value">
+            @foreach (var opt in new[] { ("1960:1999", "1960 – 1999"), ("2000:2024", "2000 – 2024"), ("1960:2024", "1960 – 2024") })
+            {
+                if (selectedRange == opt.Item1)
+                {
+                    <option value="@opt.Item1" selected>@opt.Item2</option>
+                }
+                else
+                {
+                    <option value="@opt.Item1">@opt.Item2</option>
+                }
+            }
+        </select>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMsg))
     {
-        <p class="msg @(statusErr ? "err" : "")">@statusMsg</p>
+        var isErr = statusMsg!.StartsWith("Error") || statusMsg.StartsWith("No country");
+        <p class="msg @(isErr ? "err" : "")">@statusMsg</p>
     }
 
-    <form method="post">
-        <div class="row">
-            <select id="country" name="iso3Code">
-                <option value="">— select a country —</option>
-                @foreach (var continent in continents)
-                {
-                    var countries = GetChildren(continent.Key)
-                        .Where(c => c.ContentType.Alias == "country")
-                        .Select(c => new { Name = c.Name, Iso3 = c.Value<string>("iso3Code") })
-                        .Where(c => !string.IsNullOrWhiteSpace(c.Iso3))
-                        .OrderBy(c => c.Name);
+    @foreach (var continent in continents)
+    {
+        var countries = GetChildren(continent.Key)
+            .Where(c => c.ContentType.Alias == "country")
+            .Select(c => new { Name = c.Name, Iso3 = c.Value<string>("iso3Code") })
+            .Where(c => !string.IsNullOrWhiteSpace(c.Iso3))
+            .OrderBy(c => c.Name)
+            .ToList();
 
-                    if (countries.Any())
-                    {
-                        <optgroup label="@continent.Name">
-                            @foreach (var country in countries)
-                            {
-                                <option value="@country.Iso3">@country.Name (@country.Iso3)</option>
-                            }
-                        </optgroup>
-                    }
-                }
-            </select>
+        if (countries.Count == 0) continue;
 
-            <select name="range">
-                <option value="1960:1999">1960 – 1999</option>
-                <option value="2000:2024">2000 – 2024</option>
-                <option value="1960:2024">1960 – 2024</option>
-            </select>
-
-            <button type="submit">Fetch &amp; Save</button>
-        </div>
-    </form>
+        <h2>@continent.Name</h2>
+        <table>
+            @foreach (var country in countries)
+            {
+                <tr id="c-@country.Iso3">
+                    <td>@country.Name</td>
+                    <td>@country.Iso3</td>
+                    <td>
+                        <form method="post">
+                            <input type="hidden" name="iso3Code" value="@country.Iso3" />
+                            <input type="hidden" name="range"    value="@selectedRange" />
+                            <button type="submit">Import</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </table>
+    }
 </body>
 </html>
